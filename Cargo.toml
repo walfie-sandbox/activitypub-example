@@ -1,0 +1,12 @@
+[package]
+name = "activitypub-example"
+version = "0.1.0"
+authors = ["Walfie <walfington@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+openssl = "0.10.24"
+serde_json = "1.0.40"
+ifmt = "0.2.0"
+
