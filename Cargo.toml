@@ -9,4 +9,10 @@ serde = { version = "1.0", features = ["derive"] }
 openssl = "0.10.24"
 serde_json = "1.0.40"
 ifmt = "0.2.0"
+http-signatures = { version = "0.8", features = ["use_hyper"] }
+hyper = "0.13.0-alpha.1"
+tokio = "0.2.0-alpha.4"
+ring = "0.13"
+untrusted = "0.6"
+futures-util-preview = { version = "=0.3.0-alpha.18" }
 
