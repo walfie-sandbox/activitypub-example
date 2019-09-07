@@ -1,6 +1,8 @@
 mod activitypub;
+mod user_repository;
 mod webfinger;
 
+use crate::user_repository::UserRepository;
 use futures_util::TryStreamExt;
 use http_signatures::{CreateKey, ShaSize};
 use hyper::header::{HeaderValue, CONTENT_LENGTH, CONTENT_TYPE};
@@ -14,43 +16,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let domain = "https://example.com";
     let username = "example_user";
 
-    let uri = iformat!("{domain}/users/{username}");
+    let mut repo = user_repository::InMemoryUserRepository::new(domain.to_owned());
+    let user = repo.get_user(&username).await?;
 
-    let keypair = Rsa::generate(4096)?;
-
-    let pubkey = keypair.public_key_to_der()?;
-    let privkey = keypair.private_key_to_der()?;
-
-    let pubkey_pem = String::from_utf8(Rsa::public_key_from_der(&pubkey)?.public_key_to_pem()?)?;
-
-    let person = activitypub::Person {
-        context: vec![
-            "https://www.w3.org/ns/activitystreams",
-            "https://w3id.org/security/v1",
-        ],
-        id: &uri,
-        r#type: "Person",
-        preferred_username: &username,
-        inbox: &iformat!("{uri}/inbox"),
-        public_key: activitypub::PublicKey {
-            id: &iformat!("{uri}#main-key"),
-            owner: &uri,
-            public_key_pem: &pubkey_pem,
-        },
-    };
-
+    let person = activitypub::Person::from_user(&user, &domain)?;
     let person_json = serde_json::to_string(&person)?;
+    dbg!(&person_json);
 
-    let wf_doc = webfinger::WebFinger {
-        subject: &iformat!("acct:{username}@{domain}"),
-        aliases: vec![&uri],
-        links: vec![webfinger::Link {
-            rel: "self",
-            r#type: "application/activity+json",
-            href: &uri,
-        }],
-    };
+    let wf_doc = webfinger::WebFinger::from_user(&user, &domain);
+    let wf_json = serde_json::to_string(&wf_doc)?;
+    dbg!(&wf_json);
 
+    Ok(())
+
+    /*
     let webfinger_json = serde_json::to_string(&wf_doc)?;
 
     use ring::signature::RSAKeyPair;
@@ -72,8 +51,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }}
         }}
         "#,
-        uri = uri,
-        domain = domain
+        uri = uri
     );
     let mut req = Request::post("http://localhost:3000")
         .body(json.to_owned().into())
@@ -101,4 +79,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let response_body = res.into_body().try_concat().await?;
     Ok(())
+        */
 }
