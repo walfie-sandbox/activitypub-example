@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
 use openssl::rsa::Rsa;
-use std::collections::hash_map::Entry;
+
 use std::collections::HashMap;
 use std::error::Error;
 
