@@ -7,6 +7,7 @@ mod webfinger;
 
 use crate::user_repository::{InMemoryUserRepository, UserRepository};
 use futures_util::compat::Future01CompatExt;
+use futures_util::try_future::TryFutureExt;
 use hyper_tls::HttpsConnector;
 use serde::Deserialize;
 use std::error::Error;
@@ -154,7 +155,7 @@ fn routes(
              domain_with_protocol: String,
              client: HttpsClient,
              repo: ArcRepo| {
-                (|| {
+                let request = (|| {
                     use openssl::hash::MessageDigest;
                     use openssl::pkey::PKey;
 
@@ -197,14 +198,29 @@ fn routes(
                         &private_key,
                     )?;
 
-                    client.request(request); // TODO
-
-                    Ok(http::Response::builder()
-                        .status(http::StatusCode::CREATED)
-                        .body("".to_string())
-                        .unwrap())
+                    Ok(request)
                 })()
-                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
+                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e));
+
+                log::info!("{:?}", request); // TODO
+                use futures_util::future::Either;
+                //use futures_util::stream::StreamExt; // TODO: for `concat`
+                use warp::reject::custom;
+
+                let result_future = match request {
+                    Ok(req) => Either::Left(client.request(req).map_err(|e| custom(e))),
+                    Err(e) => {
+                        log::error!("{:?}", e);
+                        Either::Right(futures_util::future::err(e))
+                    }
+                };
+
+                result_future
+                    .map_ok(|resp| {
+                        let (parts, _body) = resp.into_parts();
+                        http::Response::from_parts(parts, "".to_string()) // TODO
+                    })
+                    .compat()
             },
         );
 
