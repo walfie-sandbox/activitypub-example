@@ -10,6 +10,7 @@ use futures_util::compat::Future01CompatExt;
 use serde::Deserialize;
 use std::error::Error;
 use std::sync::Arc;
+use structopt::StructOpt;
 use warp::Filter;
 
 fn parse_acct<'a>(acct: &'a str) -> Option<(&'a str, &'a str)> {
@@ -27,17 +28,37 @@ fn parse_acct<'a>(acct: &'a str) -> Option<(&'a str, &'a str)> {
     }
 }
 
+#[derive(StructOpt, Debug)]
+struct Args {
+    #[structopt(long, validator = validate_domain)]
+    domain: String,
+    #[structopt(short = "p", long, default_value = "9090")]
+    port: u16,
+    #[structopt(long, help = "use http instead of https for external-facing URLs")]
+    no_ssl: bool,
+}
+
+fn validate_domain(domain: String) -> Result<(), String> {
+    if domain.contains("://") {
+        Err("domain should not contain a protocol".to_string())
+    } else {
+        Ok(())
+    }
+}
+
 #[runtime::main(runtime_tokio::Tokio)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
-    env_logger::init();
+    let env = env_logger::Env::default().filter_or("RUST_LOG", "info");
+    env_logger::init_from_env(env);
 
-    let domain = "https://example.com";
+    let args = Args::from_args();
+    let domain = args.domain;
 
-    let repo = Arc::new(InMemoryUserRepository::new(domain.to_owned()));
+    let repo = Arc::new(InMemoryUserRepository::new(domain.clone()));
 
     let server = {
         let user_repo = warp::any().map(move || repo.clone());
-        let domain = warp::any().map(move || domain);
+        let domain = warp::any().map(move || domain.clone());
 
         let well_known = path!(".well-known" / "webfinger")
             .and(user_repo.clone())
@@ -55,7 +76,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                                 .unwrap())
                         } else {
                             Ok(http::Response::builder()
-                                .status(http::StatusCode::BAD_REQUEST)
+                                .status(http::StatusCode::NOT_FOUND)
                                 .body("".to_string())
                                 .unwrap())
                         }
@@ -66,10 +87,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
         // TODO: Check `accept` header is `application/activity+json`
         let actor = path!("users" / String).and(domain).and(user_repo).and_then(
-            |username: String, domain: &str, repo: Arc<InMemoryUserRepository>| {
+            |username: String, domain: String, repo: Arc<InMemoryUserRepository>| {
                 (|| {
                     let user = repo.get_user(&username)?;
-                    let person = activitypub::Person::from_user(&user, domain)?;
+                    let person = activitypub::Person::from_user(&user, &domain)?;
                     let person_json = serde_json::to_string(&person)?;
 
                     Ok(http::Response::builder()
@@ -85,9 +106,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         let routes = warp::get2().and(well_known.or(actor)).boxed();
         warp::serve(routes)
     }
-    .try_bind(([127, 0, 0, 1], 9090))
+    .try_bind(([127, 0, 0, 1], args.port))
     .compat();
 
+    log::info!("Starting server on port {}", args.port);
     if server.await == Err(()) {
         panic!("server error");
     }
