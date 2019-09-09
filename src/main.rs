@@ -1,5 +1,3 @@
-#![feature(async_closure)]
-
 #[macro_use]
 extern crate warp;
 
@@ -8,19 +6,16 @@ mod user_repository;
 mod webfinger;
 
 use crate::user_repository::{InMemoryUserRepository, UserRepository};
-use futures_core::TryFuture;
 use futures_util::compat::Future01CompatExt;
-use futures_util::future::FutureExt;
-use futures_util::try_future::TryFutureExt;
 use serde::Deserialize;
 use std::error::Error;
 use std::sync::Arc;
-use warp::{Filter, Future};
+use warp::Filter;
 
 fn parse_acct<'a>(acct: &'a str) -> Option<(&'a str, &'a str)> {
     let user_with_domain = acct.trim_start_matches("acct:");
 
-    if dbg!(user_with_domain).len() == dbg!(acct).len() {
+    if user_with_domain.len() == acct.len() {
         return None;
     }
 
@@ -40,7 +35,6 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let repo = Arc::new(InMemoryUserRepository::new(domain.to_owned()));
 
-    use futures_util::try_future::TryFutureExt;
     let server = {
         let user_repo = warp::any().map(move || repo.clone());
         let domain = warp::any().map(move || domain);
@@ -66,7 +60,7 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                                 .unwrap())
                         }
                     })()
-                    .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom("TODO"))
+                    .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
                 },
             );
 
@@ -83,10 +77,11 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                         .body(person_json)
                         .unwrap())
                 })()
-                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom("TODO"))
+                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
             },
         );
 
+        // TODO: Recover
         let routes = warp::get2().and(well_known.or(actor)).boxed();
         warp::serve(routes)
     }
