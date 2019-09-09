@@ -18,7 +18,10 @@ pub struct Person {
 }
 
 impl Person {
-    pub fn from_user<'a>(user: &'a User, domain: &'a str) -> Result<Self, Box<dyn Error>> {
+    pub fn from_user<'a>(
+        user: &'a User,
+        domain: &'a str,
+    ) -> Result<Self, Box<dyn Error + Send + Sync>> {
         let uri = iformat!("{domain}/users/{user.username}");
 
         let pubkey_pem =

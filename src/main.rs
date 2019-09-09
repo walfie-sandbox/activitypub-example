@@ -1,3 +1,5 @@
+#![feature(async_closure)]
+
 #[macro_use]
 extern crate warp;
 
@@ -5,107 +7,99 @@ mod activitypub;
 mod user_repository;
 mod webfinger;
 
-use crate::user_repository::UserRepository;
-
+use crate::user_repository::{InMemoryUserRepository, UserRepository};
+use futures_core::TryFuture;
 use futures_util::compat::Future01CompatExt;
+use futures_util::future::FutureExt;
+use futures_util::try_future::TryFutureExt;
 use serde::Deserialize;
 use std::error::Error;
+use std::sync::Arc;
 use warp::{Filter, Future};
+
+fn parse_acct<'a>(acct: &'a str) -> Option<(&'a str, &'a str)> {
+    let user_with_domain = acct.trim_start_matches("acct:");
+
+    if dbg!(user_with_domain).len() == dbg!(acct).len() {
+        return None;
+    }
+
+    let mut parts = user_with_domain.splitn(2, '@');
+    if let (Some(user), Some(domain)) = (parts.next(), parts.next()) {
+        return Some((user, domain));
+    } else {
+        return None;
+    }
+}
 
 #[runtime::main(runtime_tokio::Tokio)]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     env_logger::init();
-    /*
+
     let domain = "https://example.com";
-    let username = "example_user";
 
-    let mut repo = user_repository::InMemoryUserRepository::new(domain.to_owned());
-    let user = repo.get_user(&username).await?;
+    let repo = Arc::new(InMemoryUserRepository::new(domain.to_owned()));
 
-    let person = activitypub::Person::from_user(&user, &domain)?;
-    let person_json = serde_json::to_string(&person)?;
-    dbg!(&person_json);
-
-    let wf_doc = webfinger::WebFinger::from_user(&user, &domain);
-    let wf_json = serde_json::to_string(&wf_doc)?;
-    dbg!(&wf_json);
-    */
-
+    use futures_util::try_future::TryFutureExt;
     let server = {
+        let user_repo = warp::any().map(move || repo.clone());
+        let domain = warp::any().map(move || domain);
+
         let well_known = path!(".well-known" / "webfinger")
+            .and(user_repo.clone())
             .and(warp::query::<WebFingerParams>())
-            .map(|params| "test");
+            .and_then(
+                |repo: Arc<InMemoryUserRepository>, params: WebFingerParams| {
+                    (|| {
+                        if let Some((name, domain)) = parse_acct(&params.resource) {
+                            let user = repo.get_user(&name)?;
+                            let wf_doc = webfinger::WebFinger::from_user(&user, &domain);
+                            let wf_json = serde_json::to_string(&wf_doc)?;
+                            Ok(http::Response::builder()
+                                .header("content-type", "application/json")
+                                .body(wf_json)
+                                .unwrap())
+                        } else {
+                            Ok(http::Response::builder()
+                                .status(http::StatusCode::BAD_REQUEST)
+                                .body("".to_string())
+                                .unwrap())
+                        }
+                    })()
+                    .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom("TODO"))
+                },
+            );
 
-        let actor = path!("users" / String).map(|username| "test");
-        let any = warp::any().map(|| "???");
+        // TODO: Check `accept` header is `application/activity+json`
+        let actor = path!("users" / String).and(domain).and(user_repo).and_then(
+            |username: String, domain: &str, repo: Arc<InMemoryUserRepository>| {
+                (|| {
+                    let user = repo.get_user(&username)?;
+                    let person = activitypub::Person::from_user(&user, domain)?;
+                    let person_json = serde_json::to_string(&person)?;
 
-        let routes = warp::get2().and(well_known.or(actor).or(any));
+                    Ok(http::Response::builder()
+                        .header("content-type", "application/activity+json")
+                        .body(person_json)
+                        .unwrap())
+                })()
+                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom("TODO"))
+            },
+        );
+
+        let routes = warp::get2().and(well_known.or(actor)).boxed();
         warp::serve(routes)
     }
     .try_bind(([127, 0, 0, 1], 9090))
-    .boxed()
     .compat();
 
-    server.await.map_err(|e| {
-        eprintln!("error");
-    });
-
+    if server.await == Err(()) {
+        panic!("server error");
+    }
     Ok(())
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 struct WebFingerParams {
     resource: String,
 }
-
-/*
-let webfinger_json = serde_json::to_string(&wf_doc)?;
-
-use ring::signature::RSAKeyPair;
-let json = format!(
-    r#"
-    {{
-        "@context": "https://www.w3.org/ns/activitystreams",
-        "id": "{uri}/statuses/123",
-        "type": "Create",
-        "actor": "{uri}",
-        "object": {{
-            "id": "{uri}/statuses/123",
-            "type": "Note",
-            "published": "2018-06-23T17:17:11Z",
-            "attributedTo": "{uri}",
-            "inReplyTo": "https://example.com/@user/123",
-            "content": "<p>Hello world</p>",
-            "to": "https://www.w3.org/ns/activitystreams#Public"
-        }}
-    }}
-    "#,
-    uri = uri
-);
-let mut req = Request::post("http://localhost:3000")
-    .body(json.to_owned().into())
-    .unwrap();
-req.headers_mut().insert(
-    CONTENT_TYPE,
-    HeaderValue::from_str("application/json").unwrap(),
-);
-
-use http_signatures::prelude::WithHttpSignature;
-req.headers_mut().insert(
-    CONTENT_LENGTH,
-    HeaderValue::from_str(&format!("{}", json.len())).unwrap(),
-);
-
-let key_id = &uri;
-// Add the HTTP Signature
-let private_key = RSAKeyPair::from_der(untrusted::Input::from(&privkey)).unwrap();
-req.with_signature_header(key_id.into(), CreateKey::rsa(private_key, ShaSize::SHA256))
-    .unwrap();
-
-let client = Client::new();
-let res = client.request(req).await?;
-println!("POST: {}", res.status());
-
-let response_body = res.into_body().try_concat().await?;
-Ok(())
-    */

@@ -6,17 +6,17 @@ edition = "2018"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
-openssl = "0.10.24"
-serde_json = "1.0.40"
-ifmt = "0.2.0"
-http-signatures = { version = "0.8", features = ["use_hyper"] }
+openssl = "0.10"
+serde_json = "1.0"
+ifmt = "0.2"
 hyper = "0.13.0-alpha.1"
-ring = "0.13"
-untrusted = "0.6"
+httpsig = { git = "https://github.com/walfie/httpsig", rev = "ce827d8d3e18cc612d4bf4ada38d2c1ac9208081" }
+futures-core-preview = { version = "=0.3.0-alpha.18"}
 futures-util-preview = { version = "=0.3.0-alpha.18", features = ["compat"] }
-async-trait = "0.1.11"
-warp = "0.1.19"
-env_logger = "0.6.2"
+async-trait = "0.1"
+warp = "0.1"
+env_logger = "0.6"
 runtime = "0.3.0-alpha.7"
 runtime-tokio = "0.3.0-alpha.6"
+http = "0.1"
 
