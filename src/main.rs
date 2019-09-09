@@ -7,6 +7,7 @@ mod webfinger;
 
 use crate::user_repository::{InMemoryUserRepository, UserRepository};
 use futures_util::compat::Future01CompatExt;
+use hyper_tls::HttpsConnector;
 use serde::Deserialize;
 use std::error::Error;
 use std::sync::Arc;
@@ -55,7 +56,10 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let domain = args.domain;
     let repo = Arc::new(InMemoryUserRepository::new(domain.clone()));
 
-    let server = warp::serve(routes(domain, repo))
+    let https = HttpsConnector::new().unwrap();
+    let client = hyper::Client::builder().build::<_, hyper::Body>(https);
+
+    let server = warp::serve(routes(domain, repo, !args.no_ssl, client))
         .try_bind(([127, 0, 0, 1], args.port))
         .compat();
 
@@ -72,41 +76,59 @@ struct WebFingerParams {
     resource: String,
 }
 
+#[derive(Clone, Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+struct CreateNote {
+    inbox: String,               // E.g., "https://mastodon.social/inbox"
+    in_reply_to: Option<String>, // E.g., "https://mastodon.social/@walfie/9941166"
+    content: String,
+}
+
+type HttpsClient = hyper::Client<HttpsConnector<hyper::client::HttpConnector>, hyper::Body>;
+type ArcRepo = Arc<InMemoryUserRepository>;
 fn routes(
     domain: String,
-    repo: Arc<InMemoryUserRepository>,
+    repo: ArcRepo,
+    https: bool,
+    client: HttpsClient,
 ) -> warp::filters::BoxedFilter<(impl warp::Reply,)> {
     let user_repo = warp::any().map(move || repo.clone());
+
+    let domain_with_protocol = format!("{}://{}", if https { "https" } else { "http" }, &domain);
+    let domain_with_protocol = warp::any().map(move || domain_with_protocol.clone());
+
     let domain = warp::any().map(move || domain.clone());
+
+    let client = warp::any().map(move || client.clone());
 
     let well_known = path!(".well-known" / "webfinger")
         .and(user_repo.clone())
         .and(warp::query::<WebFingerParams>())
-        .and_then(
-            |repo: Arc<InMemoryUserRepository>, params: WebFingerParams| {
-                (|| {
-                    if let Some((name, domain)) = parse_acct(&params.resource) {
-                        let user = repo.get_user(&name)?;
-                        let wf_doc = webfinger::WebFinger::from_user(&user, &domain);
-                        let wf_json = serde_json::to_string(&wf_doc)?;
-                        Ok(http::Response::builder()
-                            .header("content-type", "application/json")
-                            .body(wf_json)
-                            .unwrap())
-                    } else {
-                        Ok(http::Response::builder()
-                            .status(http::StatusCode::NOT_FOUND)
-                            .body("".to_string())
-                            .unwrap())
-                    }
-                })()
-                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
-            },
-        );
+        .and_then(|repo: ArcRepo, params: WebFingerParams| {
+            (|| {
+                if let Some((name, domain)) = parse_acct(&params.resource) {
+                    let user = repo.get_user(&name)?;
+                    let wf_doc = webfinger::WebFinger::from_user(&user, &domain);
+                    let wf_json = serde_json::to_string(&wf_doc)?;
+                    Ok(http::Response::builder()
+                        .header("content-type", "application/json")
+                        .body(wf_json)
+                        .unwrap())
+                } else {
+                    Ok(http::Response::builder()
+                        .status(http::StatusCode::NOT_FOUND)
+                        .body("".to_string())
+                        .unwrap())
+                }
+            })()
+            .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
+        });
 
     // TODO: Check `accept` header is `application/activity+json`
-    let actor = path!("users" / String).and(domain).and(user_repo).and_then(
-        |username: String, domain: String, repo: Arc<InMemoryUserRepository>| {
+    let actor = path!("users" / String)
+        .and(domain)
+        .and(user_repo.clone())
+        .and_then(|username: String, domain: String, repo: ArcRepo| {
             (|| {
                 let user = repo.get_user(&username)?;
                 let person = activitypub::Person::from_user(&user, &domain)?;
@@ -118,8 +140,75 @@ fn routes(
                     .unwrap())
             })()
             .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
-        },
-    );
+        });
 
-    warp::get2().and(well_known.or(actor)).boxed()
+    let create_note = path!("users" / String / "notes" / String)
+        .and(warp::body::json())
+        .and(domain_with_protocol)
+        .and(client)
+        .and(user_repo.clone())
+        .and_then(
+            |username: String,
+             id: String,
+             note: CreateNote,
+             domain_with_protocol: String,
+             client: HttpsClient,
+             repo: ArcRepo| {
+                (|| {
+                    use openssl::hash::MessageDigest;
+                    use openssl::pkey::PKey;
+
+                    let actor = format!("{}/users/{}", &domain_with_protocol, &username);
+                    let id_ref = format!("{}/notes/{}", &actor, &id);
+                    let key_id = format!("{}#main-key", &actor);
+
+                    let user = repo.get_user(&username)?;
+                    let private_key = PKey::private_key_from_der(&user.private_key)?;
+
+                    let create = activitypub::Create {
+                        id: id_ref.clone(),
+                        context: "https://www.w3.org/ns/activitystreams".into(),
+                        r#type: "Create".into(),
+                        actor: actor.clone(),
+                        object: activitypub::Note {
+                            id: id_ref,
+                            r#type: "Note".into(),
+                            attributed_to: actor.clone(),
+                            to: "https://www.w3.org/ns/activitystreams#Public".into(),
+                            content: note.content,
+                            in_reply_to: note.in_reply_to,
+                        },
+                    };
+
+                    let create_json = serde_json::to_string(&create)?;
+
+                    let now: String = chrono::Utc::now().format("%a, %d %b %Y %T GMT").to_string();
+
+                    let mut request = http::Request::builder()
+                        .method("POST")
+                        .uri(&note.inbox)
+                        .header("date", now)
+                        .body(create_json.into())?;
+
+                    httpsig::add_signature_header(
+                        &mut request,
+                        &key_id,
+                        MessageDigest::sha256(),
+                        &private_key,
+                    )?;
+
+                    client.request(request); // TODO
+
+                    Ok(http::Response::builder()
+                        .status(http::StatusCode::CREATED)
+                        .body("".to_string())
+                        .unwrap())
+                })()
+                .map_err(|e: Box<dyn Error + Send + Sync>| warp::reject::custom(e))
+            },
+        );
+
+    let get = warp::get2().and(well_known.or(actor));
+    let post = warp::post2().and(create_note);
+    get.or(post).boxed()
 }

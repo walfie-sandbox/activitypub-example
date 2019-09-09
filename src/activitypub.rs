@@ -9,7 +9,7 @@ use std::error::Error;
 #[serde(rename_all = "camelCase")]
 pub struct Person {
     #[serde(rename = "@context", default)]
-    pub context: Vec<Cow<'static, str>>,
+    pub context: Vec<Cow<'static, str>>, // TODO: context can also contain JSON objects
     pub id: String,
     pub r#type: Cow<'static, str>,
     pub preferred_username: String,
@@ -51,4 +51,27 @@ pub struct PublicKey {
     pub id: String,
     pub owner: String,
     pub public_key_pem: String,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Note {
+    pub id: String,
+    pub r#type: Cow<'static, str>,
+    pub attributed_to: String,
+    pub to: String,
+    pub content: String,
+    pub in_reply_to: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Create {
+    #[serde(rename = "@context", default)]
+    pub context: Cow<'static, str>,
+    pub r#type: Cow<'static, str>,
+    pub id: String,
+    //pub to: Vec<String>,
+    pub actor: String,
+    pub object: Note, // TODO: Other types
 }

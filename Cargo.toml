@@ -10,7 +10,8 @@ openssl = "0.10"
 serde_json = "1.0"
 ifmt = "0.2"
 hyper = "0.13.0-alpha.1"
-httpsig = { git = "https://github.com/walfie/httpsig", rev = "ce827d8d3e18cc612d4bf4ada38d2c1ac9208081" }
+hyper-tls = "0.4.0-alpha.1"
+httpsig = { git = "https://github.com/walfie/httpsig", rev = "6aef27b12a51a233fe4c949126662a9a502b5151" }
 futures-core-preview = { version = "=0.3.0-alpha.18"}
 futures-util-preview = { version = "=0.3.0-alpha.18", features = ["compat"] }
 async-trait = "0.1"
@@ -21,4 +22,5 @@ runtime-tokio = "0.3.0-alpha.6"
 http = "0.1"
 structopt = "0.3"
 log = "0.4"
+chrono = "0.4"
 
